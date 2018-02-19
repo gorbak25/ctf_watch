@@ -64,11 +64,11 @@ class CTFPlatform(ABC):
         pass
 
     @abstractmethod
-    def pool_game_state(self):
+    def poll_game_state(self):
         pass
 
     @abstractmethod
-    def pool_scoreboard(self):
+    def poll_scoreboard(self):
         pass
 
 #https://ctfd.io/
@@ -80,7 +80,7 @@ class CTFD(CTFPlatform):
         nonce = self.session.get(self.url+"/login").text.split('nonce"')[1].split("value=\"")[1].split("\"")[0]
         self.session.post(self.url+"/login", data={"name": self.team_name, "nonce": nonce, "password": self.password})
 
-    def pool_game_state(self):
+    def poll_game_state(self):
         chals = self.session.get(self.url + "/chals").json()["game"]
         solved = self.session.get(self.url + "/solves").json()["solves"]
 
@@ -93,7 +93,7 @@ class CTFD(CTFPlatform):
 
         return chals_state
 
-    def pool_scoreboard(self):
+    def poll_scoreboard(self):
         data = self.session.get(self.url + "/scores").json()["standings"]
         better_teams = {}
         worse_teams = {}
@@ -116,20 +116,20 @@ class Bot:
     def __init__(self, configuration):
         self.ctf = configuration["CTF_PLATFORM"](configuration["CTF_URL"], configuration["CTF_LOGIN"], configuration["CTF_PASSWORD"])
         self.slack = Slack(configuration["SLACK_CHANNEL_WEBHOOK"], configuration["SLACK_ADMIN_WEBHOOK"])
-        self.pooling_interval = configuration["POOLING_INTERVAL"]
-        self.game_state = self.ctf.pool_game_state()
-        self.better_teams, self.our_team, self.worse_teams = self.ctf.pool_scoreboard()
+        self.polling_interval = configuration["POLLING_INTERVAL"]
+        self.game_state = self.ctf.poll_game_state()
+        self.better_teams, self.our_team, self.worse_teams = self.ctf.poll_scoreboard()
 
-        self.slack.notify_all("Bot started for team \"{}\"\nPolling CTF state every {} seconds".format(self.ctf.team_name, self.pooling_interval))
+        self.slack.notify_all("Bot started for team \"{}\"\nPolling CTF state every {} seconds".format(self.ctf.team_name, self.polling_interval))
 
         self.loop()
 
     def loop(self):
         while(1):
             try:
-                time.sleep(self.pooling_interval)
-                cur_state = self.ctf.pool_game_state()
-                cur_better_teams, cur_our_team, cur_worse_teams = self.ctf.pool_scoreboard()
+                time.sleep(self.polling_interval)
+                cur_state = self.ctf.poll_game_state()
+                cur_better_teams, cur_our_team, cur_worse_teams = self.ctf.poll_scoreboard()
 
                 for chal in cur_state.keys():
                     # look for new challenges
@@ -243,7 +243,7 @@ if __name__ == "__main__":
                 elif entry[0] == "SLACK_CHANNEL_WEBHOOK":
                     check_url(entry[1])
                     configuration[entry[0]] = entry[1]
-                elif entry[0] == "POOLING_INTERVAL":
+                elif entry[0] == "POLLING_INTERVAL":
                     configuration[entry[0]] = int(entry[1])
                 elif entry[0] == "CTF_PLATFORM":
                     if entry[1] == "CTFD":
