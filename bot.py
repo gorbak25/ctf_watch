@@ -73,16 +73,25 @@ class CTFPlatform(ABC):
 
 #https://ctfd.io/
 class CTFD(CTFPlatform):
+    def get_request(self, endpoint, **kwargs):
+        return self.session.get(self.url + endpoint, **kwargs).text
+
+    def get_json_api(self, endpoint, **kwargs):
+        return self.session.get(self.url + endpoint, **kwargs).json()
+
+    def post_request(self, endpoint, **kwargs):
+        return self.session.post(self.url + endpoint, **kwargs).text
+
     def login(self):
         self.session = requests.Session()
         self.session.headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64; rv:58.0) Gecko/20100101 Firefox/58.0"
 
-        nonce = self.session.get(self.url+"/login").text.split('nonce"')[1].split("value=\"")[1].split("\"")[0]
-        self.session.post(self.url+"/login", data={"name": self.team_name, "nonce": nonce, "password": self.password})
+        nonce = self.get_request("/login").split('nonce"')[1].split("value=\"")[1].split("\"")[0]
+        self.post_request("/login", data={"name": self.team_name, "nonce": nonce, "password": self.password})
 
     def poll_game_state(self):
-        chals = self.session.get(self.url + "/chals").json()["game"]
-        solved = self.session.get(self.url + "/solves").json()["solves"]
+        chals = self.get_json_api("/chals")["game"]
+        solved = self.get_json_api("/solves")["solves"]
 
         chals_state = {}
         for state in chals:
@@ -94,7 +103,7 @@ class CTFD(CTFPlatform):
         return chals_state
 
     def poll_scoreboard(self):
-        data = self.session.get(self.url + "/scores").json()["standings"]
+        data = self.get_json_api("/scores")["standings"]
         better_teams = {}
         worse_teams = {}
 
@@ -102,6 +111,82 @@ class CTFD(CTFPlatform):
         our_team = None
         for entry in data:
             team = Team(entry['pos'], entry['team'], entry['score'])
+            if team.name == self.team_name:
+                our_team = team
+                mode = True
+            elif mode:
+                worse_teams[team.name] = team
+            else:
+                better_teams[team.name] = team
+
+        return better_teams, our_team, worse_teams
+
+#https://github.com/themis-project/themis-quals
+class ThemisQuals(CTFPlatform):
+    def get_challenge_properties_from_div(self, div):
+        challenge_name = div.split("\"#submit-task-modal\">\n")[1].split("</h5>")[0].strip()
+        challenge_value = int(div.split("\"themis-task-value\">\n")[1].split("</div>")[0].strip())
+        challenge_category = div.split("&nbsp;")[1].split("</span>")[0].strip()
+        challenge_solved = "bg-success" in div.split("</h5>")[0]
+
+        challenge_id = int(div.split('\"')[0])
+        challenge_hints = len(self.get_json_api("/api/task/{}/hint".format(challenge_id)))
+
+        return Challenge(challenge_category, challenge_name, challenge_value, challenge_hints, challenge_solved)
+
+    def get_team_properties_from_entry(self, entry):
+        team_pos = int(entry.split("<th scope=\"row\">")[1].split("</th>")[0])
+        team_name = entry.split("class=\"themis-team-link\">")[1].split("</a>")[0]
+        team_score = int(entry.split("<td>")[2].split("</td>")[0])
+
+        return Team(team_pos, team_name, team_score)
+
+    def get_request(self, endpoint, **kwargs):
+        text =  self.session.get(self.url + endpoint, **kwargs).text
+        if "\"token\":\"" in text:
+            csrf_token = text.split("\"token\":\"")[1].split("\"")[0]
+            self.session.headers["X-CSRF-Token"] = csrf_token
+        return text
+
+    def get_json_api(self, endpoint, **kwargs):
+        return self.session.get(self.url + endpoint, **kwargs).json()
+
+    def post_request(self, endpoint, **kwargs):
+        return self.session.post(self.url + endpoint, **kwargs).text
+
+    def login(self):
+        self.session = requests.Session()
+        self.session.headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64; rv:58.0) Gecko/20100101 Firefox/58.0"
+
+        self.get_request("") #get a csrf token
+
+        r = self.post_request("/api/team/signin", data={"password": self.password, "team": self.team_name})
+        if "{\"success\":true}" != r:
+            raise RuntimeError("Invalid login")
+
+    def poll_game_state(self):
+        front = self.get_request("/tasks")
+        front = front.split("themis-task-preview-container\" data-task-id=\"")[1:-1]
+
+        chals_state = {}
+        for div in front:
+            chal = self.get_challenge_properties_from_div(div)
+            chals_state[chal.name] = chal
+
+        return chals_state
+
+    def poll_scoreboard(self):
+        page = self.get_request("/scoreboard")
+        page = page.split("<tbody id=\"themis-scoreboard-table-body\">")[1].split("</tbody>")[0]
+        entries = page.split("<tr class=\"themis-scoreboard-row")[1:]
+
+        better_teams = {}
+        worse_teams = {}
+
+        mode = False
+        our_team = None
+        for entry in entries:
+            team = self.get_team_properties_from_entry(entry)
             if team.name == self.team_name:
                 our_team = team
                 mode = True
@@ -222,7 +307,6 @@ if __name__ == "__main__":
         r'(?::\d+)?'  # optional port
         r'(?:/?|[/?]\S+)$', re.IGNORECASE)
 
-
     # ----------------------------- End of C&P ---------------
 
     def check_url(url):
@@ -248,6 +332,8 @@ if __name__ == "__main__":
                 elif entry[0] == "CTF_PLATFORM":
                     if entry[1] == "CTFD":
                         configuration[entry[0]] = CTFD
+                    if entry[1] == "ThemisQuals":
+                        configuration[entry[0]] = ThemisQuals
                     else:
                         raise RuntimeError("Warning Unknown CTF Platform")
                 elif entry[0] == "CTF_URL":

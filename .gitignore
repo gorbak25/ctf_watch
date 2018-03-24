@@ -1,2 +1,3 @@
-tamuctf.conf
+*.conf
+!example.conf
 .idea
