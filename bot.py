@@ -9,23 +9,41 @@ from abc import ABC, abstractmethod
 import re
 
 class Slack:
-    def __init__(self, public_webhook, admin_webhook):
+    def __init__(self, public_webhook, admin_webhook, slack_mode):
         # webhook for ctf channel
         self.public_webhook = public_webhook
 
         #webhooks for admins
         self.admins_webhooks = admin_webhook
 
+        if slack_mode == "ALL":
+            self.notify_admins = self.slack_notify_admins
+            self.notify_channel = self.slack_notify_channel
+        elif slack_mode == "ADMINS_ONLY":
+            self.notify_admins = self.stdout_sink
+            self.notify_channel = self.slack_notify_channel
+        elif slack_mode == "NO_SLACK":
+            self.notify_admins = self.stdout_sink
+            self.notify_channel = self.black_hole_sink
+        else:
+            raise RuntimeError("Invalid slack mode, supported modes are: ALL, ADMINS_ONLY, NO_SLACK")
+
     def post_message(self, message, webhook):
         r = requests.post(webhook, json={"text": message})
         if (r.status_code != 200):
             raise RuntimeError("Failed to post slack message")
 
-    def notify_admins(self, message):
+    def black_hole_sink(self, message):
+        pass
+
+    def stdout_sink(self, message):
+        print("[SLACK MESSAGE]\n"+message+'\n')
+
+    def slack_notify_admins(self, message):
         for admin in self.admins_webhooks:
             self.post_message(message, admin)
 
-    def notify_channel(self, message):
+    def slack_notify_channel(self, message):
         self.send_to_channel("<!channel>\n"+message)
 
     def send_to_channel(self, message):
@@ -142,6 +160,7 @@ class ThemisQuals(CTFPlatform):
         return Team(team_pos, team_name, team_score)
 
     def get_request(self, endpoint, **kwargs):
+        kwargs["timeout"] = self.request_timeout
         text =  self.session.get(self.url + endpoint, **kwargs).text
         if "\"token\":\"" in text:
             csrf_token = text.split("\"token\":\"")[1].split("\"")[0]
@@ -149,14 +168,17 @@ class ThemisQuals(CTFPlatform):
         return text
 
     def get_json_api(self, endpoint, **kwargs):
+        kwargs["timeout"] = self.request_timeout
         return self.session.get(self.url + endpoint, **kwargs).json()
 
     def post_request(self, endpoint, **kwargs):
+        kwargs["timeout"] = self.request_timeout
         return self.session.post(self.url + endpoint, **kwargs).text
 
     def login(self):
         self.session = requests.Session()
         self.session.headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64; rv:58.0) Gecko/20100101 Firefox/58.0"
+        self.request_timeout = 2 #2 seconds at most
 
         self.get_request("") #get a csrf token
 
@@ -200,7 +222,7 @@ class ThemisQuals(CTFPlatform):
 class Bot:
     def __init__(self, configuration):
         self.ctf = configuration["CTF_PLATFORM"](configuration["CTF_URL"], configuration["CTF_LOGIN"], configuration["CTF_PASSWORD"])
-        self.slack = Slack(configuration["SLACK_CHANNEL_WEBHOOK"], configuration["SLACK_ADMIN_WEBHOOK"])
+        self.slack = Slack(configuration["SLACK_CHANNEL_WEBHOOK"], configuration["SLACK_ADMIN_WEBHOOK"], configuration["SLACK_MODE"])
         self.polling_interval = configuration["POLLING_INTERVAL"]
         self.game_state = self.ctf.poll_game_state()
         self.better_teams, self.our_team, self.worse_teams = self.ctf.poll_scoreboard()
@@ -212,6 +234,7 @@ class Bot:
     def loop(self):
         while(1):
             try:
+                print("[LOG {}]\nPooling ctf site was successful".format(int(time.time())))
                 time.sleep(self.polling_interval)
                 cur_state = self.ctf.poll_game_state()
                 cur_better_teams, cur_our_team, cur_worse_teams = self.ctf.poll_scoreboard()
@@ -252,7 +275,7 @@ class Bot:
                 # we were surpassed by someone
                 if cur_our_team.pos < self.our_team.pos and cur_our_team.score == self.our_team.score:
                     diff = filter(lambda entry: entry[0] not in self.better_teams, cur_better_teams.items())
-                    diff = map(lambda entry: "We were surpassed by {} by {} points"(
+                    diff = map(lambda entry: "We were surpassed by {} by {} points".format(
                         entry[0],
                         entry[1].score - cur_our_team.score), diff)
                     diff = '\n'.join(diff)
@@ -294,8 +317,8 @@ class Bot:
                 exit(-1)
 
 if __name__ == "__main__":
-    if(len(sys.argv)) != 2:
-        print("Usage ./bot.py [configuration_file]")
+    if(len(sys.argv)) != 3:
+        print("Usage ./bot.py [configuration_file] [slack_mode]")
         exit(0)
 
     # https://stackoverflow.com/questions/7160737/python-how-to-validate-a-url-in-python-malformed-or-not
@@ -341,6 +364,9 @@ if __name__ == "__main__":
                     configuration[entry[0]] = entry[1]
                 else:
                     configuration[entry[0]] = entry[1]
+        if sys.argv[2] not in ["ALL", "ADMINS_ONLY", "NO_SLACK"]:
+            raise RuntimeError("Invalid logger mode, supported modes are: ALL, ADMINS_ONLY, NO_SLACK")
+        configuration["SLACK_MODE"] = sys.argv[2]
         Bot(configuration)
     except Exception as ex:
         print("Exception:", ex)
