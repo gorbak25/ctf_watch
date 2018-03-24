@@ -20,8 +20,8 @@ class Slack:
             self.notify_admins = self.slack_notify_admins
             self.notify_channel = self.slack_notify_channel
         elif slack_mode == "ADMINS_ONLY":
-            self.notify_admins = self.stdout_sink
-            self.notify_channel = self.slack_notify_channel
+            self.notify_admins = self.slack_notify_admins
+            self.notify_channel = self.stdout_sink
         elif slack_mode == "NO_SLACK":
             self.notify_admins = self.stdout_sink
             self.notify_channel = self.black_hole_sink
